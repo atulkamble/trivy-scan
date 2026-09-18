@@ -6,7 +6,7 @@ pool:
 
 variables:
   imageRepository: "my-docker-image"
-  dockerRegistryServiceConnection: "myContainerRegistryServiceConnection"
+  dockerRegistryServiceConnection: "acr"
   tag: "$(Build.BuildId)"
 
 stages:
