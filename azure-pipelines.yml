@@ -2,134 +2,76 @@ trigger:
   - main
 
 pool:
-  vmImage: 'ubuntu-latest'
+  vmImage: "ubuntu-latest"
 
 variables:
-  imageRepository: 'my-docker-image'
-  dockerRegistryServiceConnection: 'myContainerRegistryServiceConnection'
-  tag: '$(Build.BuildId)'
+  imageRepository: "my-docker-image"
+  dockerRegistryServiceConnection: "myContainerRegistryServiceConnection"
+  tag: "$(Build.BuildId)"
 
 stages:
+  - stage: BuildAndScan
+    displayName: "Docker Build and Trivy Scan"
 
-# =========================================================
-# Stage 1: Build and Push Docker Image
-# =========================================================
-- stage: DockerBuild
-  displayName: 'Build Docker Image'
+    jobs:
+      - job: BuildScan
+        displayName: "Build and Scan Job"
 
-  jobs:
-  - job: Build
-    displayName: 'Build Job'
+        steps:
+          # 1. Build and Push Docker Image
+          - task: Docker@2
+            displayName: "Build and Push Docker Image"
+            inputs:
+              containerRegistry: "$(dockerRegistryServiceConnection)"
+              repository: "$(imageRepository)"
+              command: "buildAndPush"
+              Dockerfile: "**/Dockerfile"
+              tags: |
+                $(tag)
 
-    steps:
-    - task: Docker@2
-      displayName: 'Build and Push Docker Image'
-      inputs:
-        containerRegistry: '$(dockerRegistryServiceConnection)'
-        repository: '$(imageRepository)'
-        command: 'buildAndPush'
-        Dockerfile: '**/Dockerfile'
-        tags: |
-          $(tag)
+          # 2. Install Trivy
+          - task: Bash@3
+            displayName: "Install Trivy"
+            inputs:
+              targetType: "inline"
+              script: |
+                sudo apt-get update
+                sudo apt-get install -y wget gnupg
 
+                wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+                | gpg --dearmor \
+                | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
 
-# =========================================================
-# Stage 2: Trivy Security Scan
-# =========================================================
-- stage: TrivyScan
-  displayName: 'Trivy Security Scan'
-  dependsOn: DockerBuild
+                echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+                | sudo tee /etc/apt/sources.list.d/trivy.list
 
-  jobs:
-  - job: TrivyScanJob
-    displayName: 'Trivy Scan Job'
+                sudo apt-get update
+                sudo apt-get install -y trivy
 
-    steps:
+                trivy --version
 
-    # Login to Container Registry
-    - task: Docker@2
-      displayName: 'Login to Container Registry'
-      inputs:
-        command: 'login'
-        containerRegistry: '$(dockerRegistryServiceConnection)'
+          # 3. Scan Docker Image
+          - task: Bash@3
+            displayName: "Trivy Scan"
+            inputs:
+              targetType: "inline"
+              script: |
+                echo "Running Trivy Security Scan..."
 
-    # Install Trivy
-    - task: Bash@3
-      displayName: 'Install Trivy'
-      inputs:
-        targetType: 'inline'
-        script: |
-          sudo apt-get update
-          sudo apt-get install -y wget gnupg lsb-release
+                trivy image \
+                  --severity HIGH,CRITICAL \
+                  --format json \
+                  --output trivy-report.json \
+                  my-docker-image:$(Build.BuildId)
 
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          # 4. Read Report
+          - task: Bash@3
+            displayName: "Read Trivy Report"
+            inputs:
+              targetType: "inline"
+              script: |
+                echo "================================="
+                echo "       TRIVY SCAN REPORT"
+                echo "================================="
 
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
-
-          sudo apt-get update
-          sudo apt-get install -y trivy
-
-          trivy --version
-
-    # Pull Docker Image
-    - task: Bash@3
-      displayName: 'Pull Docker Image'
-      inputs:
-        targetType: 'inline'
-        script: |
-          docker pull <REGISTRY>/$(imageRepository):$(tag)
-
-    # Scan Image
-    - task: Bash@3
-      displayName: 'Run Trivy Scan'
-      inputs:
-        targetType: 'inline'
-        script: |
-          trivy image \
-            --severity HIGH,CRITICAL \
-            --format json \
-            --output $(Build.ArtifactStagingDirectory)/trivy-scan-results.json \
-            <REGISTRY>/$(imageRepository):$(tag)
-
-    # Publish Trivy Report
-    - task: PublishPipelineArtifact@1
-      displayName: 'Publish Trivy Report'
-      inputs:
-        targetPath: '$(Build.ArtifactStagingDirectory)/trivy-scan-results.json'
-        artifact: 'trivy-report'
-
-
-# =========================================================
-# Stage 3: Read Report
-# =========================================================
-- stage: ReadReport
-  displayName: 'Read Trivy Scan Report'
-  dependsOn: TrivyScan
-
-  jobs:
-  - job: ReadReportJob
-    displayName: 'Read Report Job'
-
-    steps:
-
-    # Download Report
-    - task: DownloadPipelineArtifact@2
-      displayName: 'Download Trivy Report'
-      inputs:
-        artifact: 'trivy-report'
-        path: '$(Pipeline.Workspace)/trivy-report'
-
-    # Read Report
-    - task: Bash@3
-      displayName: 'Display Trivy Report'
-      inputs:
-        targetType: 'inline'
-        script: |
-          echo "=========================================="
-          echo "        TRIVY SECURITY SCAN REPORT"
-          echo "=========================================="
-
-          cat $(Pipeline.Workspace)/trivy-report/trivy-scan-results.json
+                cat trivy-report.json
