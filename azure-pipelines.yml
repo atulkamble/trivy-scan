@@ -34,10 +34,10 @@ stages:
 
 
 # =========================================================
-# Stage 2: Trivy Scan
+# Stage 2: Trivy Security Scan
 # =========================================================
 - stage: TrivyScan
-  displayName: 'Trivy SCA Scan'
+  displayName: 'Trivy Security Scan'
   dependsOn: DockerBuild
 
   jobs:
@@ -46,37 +46,64 @@ stages:
 
     steps:
 
-    # Pull the image because this stage may run on another agent
+    # Login to Container Registry
     - task: Docker@2
       displayName: 'Login to Container Registry'
       inputs:
         command: 'login'
         containerRegistry: '$(dockerRegistryServiceConnection)'
 
-    - bash: |
-        docker pull <REGISTRY>/$(imageRepository):$(tag)
-      displayName: 'Pull Docker Image'
-
-    - task: Trivy@1
-      displayName: 'Scan Docker Image'
+    # Install Trivy
+    - task: Bash@3
+      displayName: 'Install Trivy'
       inputs:
-        imageName: '<REGISTRY>/$(imageRepository):$(tag)'
-        scanType: 'sca'
-        severityThreshold: 'HIGH'
-        outputFormat: 'json'
-        outputFile: '$(Build.ArtifactStagingDirectory)/trivy-scan-results.json'
+        targetType: 'inline'
+        script: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg lsb-release
 
-    # Publish report so next stage can access it
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor \
+            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list
+
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+          trivy --version
+
+    # Pull Docker Image
+    - task: Bash@3
+      displayName: 'Pull Docker Image'
+      inputs:
+        targetType: 'inline'
+        script: |
+          docker pull <REGISTRY>/$(imageRepository):$(tag)
+
+    # Scan Image
+    - task: Bash@3
+      displayName: 'Run Trivy Scan'
+      inputs:
+        targetType: 'inline'
+        script: |
+          trivy image \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output $(Build.ArtifactStagingDirectory)/trivy-scan-results.json \
+            <REGISTRY>/$(imageRepository):$(tag)
+
+    # Publish Trivy Report
     - task: PublishPipelineArtifact@1
       displayName: 'Publish Trivy Report'
       inputs:
         targetPath: '$(Build.ArtifactStagingDirectory)/trivy-scan-results.json'
         artifact: 'trivy-report'
-        publishLocation: 'pipeline'
 
 
 # =========================================================
-# Stage 3: Read Trivy Report
+# Stage 3: Read Report
 # =========================================================
 - stage: ReadReport
   displayName: 'Read Trivy Scan Report'
@@ -88,19 +115,21 @@ stages:
 
     steps:
 
+    # Download Report
     - task: DownloadPipelineArtifact@2
       displayName: 'Download Trivy Report'
       inputs:
         artifact: 'trivy-report'
         path: '$(Pipeline.Workspace)/trivy-report'
 
+    # Read Report
     - task: Bash@3
-      displayName: 'Read Trivy Scan Report'
+      displayName: 'Display Trivy Report'
       inputs:
         targetType: 'inline'
         script: |
           echo "=========================================="
-          echo "       TRIVY SECURITY SCAN REPORT"
+          echo "        TRIVY SECURITY SCAN REPORT"
           echo "=========================================="
 
           cat $(Pipeline.Workspace)/trivy-report/trivy-scan-results.json
