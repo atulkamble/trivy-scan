@@ -1,1 +1,51 @@
+trigger: 
+  - main
 
+pool:
+  vmImage: 'ubuntu-latest'
+  
+stages: 
+  - stage: Docker Build
+    displayName: 'Build Docker Image'
+    jobs:
+      - job: Build
+        displayName: 'Build Job'
+        steps:
+          - task: Docker@2
+            inputs:
+              containerRegistry: 'myContainerRegistryServiceConnection'
+              repository: 'my-docker-image'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)  
+
+stage:
+  - stage: Trivy Scan
+    displayName: 'Trivy SCA Scan'
+    jobs:
+      - job: TrivyScan
+        displayName: 'Trivy Scan Job'
+        steps:
+          - task: Trivy@1
+            inputs:
+              imageName: 'my-docker-image:$(Build.BuildId)'
+              scanType: 'sca'
+              severityThreshold: 'HIGH'
+              outputFormat: 'json'
+              outputFile: 'trivy-scan-results.json'
+
+
+stage: 
+   - stage: Read Report
+     displayName: 'Read Trivy Scan Report'
+     jobs:
+       - job: ReadReport
+         displayName: 'Read Report Job'
+         steps:
+           - task: Bash@3
+             inputs:
+               targetType: 'inline'
+               script: |
+                 echo "Reading Trivy Scan Report..."
+                 cat trivy-scan-results.json              
