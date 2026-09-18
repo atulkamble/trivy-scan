@@ -1,51 +1,106 @@
-trigger: 
+trigger:
   - main
 
 pool:
   vmImage: 'ubuntu-latest'
-  
-stages: 
-  - stage: Docker Build
-    displayName: 'Build Docker Image'
-    jobs:
-      - job: Build
-        displayName: 'Build Job'
-        steps:
-          - task: Docker@2
-            inputs:
-              containerRegistry: 'myContainerRegistryServiceConnection'
-              repository: 'my-docker-image'
-              command: 'buildAndPush'
-              Dockerfile: '**/Dockerfile'
-              tags: |
-                $(Build.BuildId)  
 
-stage:
-  - stage: Trivy Scan
-    displayName: 'Trivy SCA Scan'
-    jobs:
-      - job: TrivyScan
-        displayName: 'Trivy Scan Job'
-        steps:
-          - task: Trivy@1
-            inputs:
-              imageName: 'my-docker-image:$(Build.BuildId)'
-              scanType: 'sca'
-              severityThreshold: 'HIGH'
-              outputFormat: 'json'
-              outputFile: 'trivy-scan-results.json'
+variables:
+  imageRepository: 'my-docker-image'
+  dockerRegistryServiceConnection: 'myContainerRegistryServiceConnection'
+  tag: '$(Build.BuildId)'
+
+stages:
+
+# =========================================================
+# Stage 1: Build and Push Docker Image
+# =========================================================
+- stage: DockerBuild
+  displayName: 'Build Docker Image'
+
+  jobs:
+  - job: Build
+    displayName: 'Build Job'
+
+    steps:
+    - task: Docker@2
+      displayName: 'Build and Push Docker Image'
+      inputs:
+        containerRegistry: '$(dockerRegistryServiceConnection)'
+        repository: '$(imageRepository)'
+        command: 'buildAndPush'
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          $(tag)
 
 
-stage: 
-   - stage: Read Report
-     displayName: 'Read Trivy Scan Report'
-     jobs:
-       - job: ReadReport
-         displayName: 'Read Report Job'
-         steps:
-           - task: Bash@3
-             inputs:
-               targetType: 'inline'
-               script: |
-                 echo "Reading Trivy Scan Report..."
-                 cat trivy-scan-results.json              
+# =========================================================
+# Stage 2: Trivy Scan
+# =========================================================
+- stage: TrivyScan
+  displayName: 'Trivy SCA Scan'
+  dependsOn: DockerBuild
+
+  jobs:
+  - job: TrivyScanJob
+    displayName: 'Trivy Scan Job'
+
+    steps:
+
+    # Pull the image because this stage may run on another agent
+    - task: Docker@2
+      displayName: 'Login to Container Registry'
+      inputs:
+        command: 'login'
+        containerRegistry: '$(dockerRegistryServiceConnection)'
+
+    - bash: |
+        docker pull <REGISTRY>/$(imageRepository):$(tag)
+      displayName: 'Pull Docker Image'
+
+    - task: Trivy@1
+      displayName: 'Scan Docker Image'
+      inputs:
+        imageName: '<REGISTRY>/$(imageRepository):$(tag)'
+        scanType: 'sca'
+        severityThreshold: 'HIGH'
+        outputFormat: 'json'
+        outputFile: '$(Build.ArtifactStagingDirectory)/trivy-scan-results.json'
+
+    # Publish report so next stage can access it
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Trivy Report'
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)/trivy-scan-results.json'
+        artifact: 'trivy-report'
+        publishLocation: 'pipeline'
+
+
+# =========================================================
+# Stage 3: Read Trivy Report
+# =========================================================
+- stage: ReadReport
+  displayName: 'Read Trivy Scan Report'
+  dependsOn: TrivyScan
+
+  jobs:
+  - job: ReadReportJob
+    displayName: 'Read Report Job'
+
+    steps:
+
+    - task: DownloadPipelineArtifact@2
+      displayName: 'Download Trivy Report'
+      inputs:
+        artifact: 'trivy-report'
+        path: '$(Pipeline.Workspace)/trivy-report'
+
+    - task: Bash@3
+      displayName: 'Read Trivy Scan Report'
+      inputs:
+        targetType: 'inline'
+        script: |
+          echo "=========================================="
+          echo "       TRIVY SECURITY SCAN REPORT"
+          echo "=========================================="
+
+          cat $(Pipeline.Workspace)/trivy-report/trivy-scan-results.json
