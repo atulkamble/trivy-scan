@@ -41,5 +41,14 @@ pipeline {
                 }
             }
         }
+
+        stage('Trivy Scan Results') {
+            steps {
+                script {
+                    echo 'Displaying Trivy scan results...'
+                    sh 'trivy image --format table my-docker-image:${BUILD_ID}'
+                }
+            }
+        }
     }
 }
